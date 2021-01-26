@@ -64,10 +64,10 @@ class ACEnvironment2D:
 
     def get_sta(self):
 
-        return (self._pos_m,
-                self._vel_mps,
-                np.array([self._bank_rad, self._flightpath_rad, self._heading_rad]),
-                self._pos_history)
+        return np.array([self._pos_m.copy(),
+                         self._vel_mps,
+                         np.array([self._bank_rad, self._flightpath_rad, self._heading_rad], dtype=object),
+                         self._pos_history], dtype=object)
 
     def set_cmd_bank(self, cmd_deg):
         self._cmd_bank_rad = np.deg2rad(_pi_bound_deg(cmd_deg))
@@ -112,10 +112,10 @@ class ACEnvironment2D:
 
             self._t += self._dt
 
-        return (self._pos_m,
-                self._vel_mps,
-                np.array([self._bank_rad, self._flightpath_rad, self._heading_rad]),
-                self._pos_history)
+        return np.array([self._pos_m.copy(),
+                         self._vel_mps,
+                         np.array([self._bank_rad, self._flightpath_rad, self._heading_rad], dtype=object),
+                         self._pos_history], dtype=object)
 
     def sim(self, simTime_s):
 

@@ -8,6 +8,7 @@ class Config:
     # input dim
     window_width  = 800 # pixels
     window_height = 800 # pixels
+    window_z = 800 # pixels
     diagonal      = 800  # this one is used to normalize dist_to_intruder
     tick = 30
     scale = 30

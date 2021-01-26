@@ -6,7 +6,7 @@ from gym.utils import seeding
 from scipy.spatial.transform import Rotation as R
 
 from .config import Config
-from dubinsairplane.ACEnvironment import ACEnvironment2D
+from .ACEnvironment import ACEnvironment2D
 
 class DubinsAC2Denv(gym.Env):
     metadata = {'render.modes': ['human']}
@@ -17,19 +17,47 @@ class DubinsAC2Denv(gym.Env):
     _vel_mps = None
     _action_time_s = None
 
-    def __init__(self, actions='discrete'):
+    def __init__(self, actions='cont'):
         self._load_config()
         self.viewer = None
 
 
         self._vel_mps = 20
         self._action_time_s = 0.2
+        self.actionIntegral = 0
 
-        # build observation space and action space
-        self.observation_space = self._build_observation_space()
+        # 'err_x': spaces.Box(low=-self.area_width, high=self.area_width, shape=(1,), dtype=np.float32),
+        # 'err_y': spaces.Box(low=-self.area_height, high=self.area_height, shape=(1,), dtype=np.float32),
+        # 'LOS_deg': spaces.Box(low=-180, high=180, shape=(1,), dtype=np.float32),
+        # 'ATA_deg': spaces.Box(low=-180, high=180, shape=(1,), dtype=np.float32),
+        # 'AA_deg': spaces.Box(low=-180, high=180, shape=(1,), dtype=np.float32),
+        # 'redATA_deg': spaces.Box(low=-180, high=180, shape=(1,), dtype=np.float32),
+        # 'blue_heading': spaces.Box(low=0, high=359, shape=(1,), dtype=np.float32),
+        # 'blue_bank': spaces.Box(low=-90, high=90, shape=(1,), dtype=np.float32),
+
+        lowlim=np.array([-self.window_width,
+             -self.window_height,
+             -180,
+             -180,
+             -180,
+             -180,
+             0,
+             -90
+             ])
+        highlim=np.array([self.window_width,
+             self.window_height,
+             180,
+             180,
+             180,
+             180,
+             359,
+             90
+              ])
+
+        self.observation_space = spaces.Box(low=lowlim, high=highlim, shape=(8,), dtype=np.float32)
 
         if actions == 'discrete':
-            self.action_space = spaces.Discrete(9)  # 0 -> 4 bank angle command: -90 45 0 45 90
+            self.action_space = spaces.Discrete(13)  # 0 -> 4 bank angle command: -90 45 0 45 90
         else:
             self.action_space = spaces.Box( low=-1., high=1., shape=(1,), dtype=np.float32 )  # 0 -> 4 bank angle command: -90 45 0 45 90
 
@@ -41,12 +69,15 @@ class DubinsAC2Denv(gym.Env):
 
     def step(self, action):
 
-        cmd_bank_deg = (float(action) - 5.0) * 20.0
-        #cmd_bank_deg = (action[0] - 0.5)*2 * 60.
-        #cmd_bank_deg = action[0][0] * 60.
+        #delta_cmd_bank_deg = (float(action) - 6.0) * 14.0
+        #cmd_bank_deg = (action[0] - 0.5)*2 * 70.
+        cmd_bank_deg = action[0] * 70.
+        cmd_bank_deg = np.clip( cmd_bank_deg, -90, 90)
+
         self._blueAC.takeaction(cmd_bank_deg, 0, self._vel_mps, self._action_time_s)
 
         self._redAC.takeaction(0, 0, self._vel_mps/2, self._action_time_s)
+
         if self._redAC._pos_m[0] > self.window_width:
             self._redAC._heading_rad = np.mod(self._redAC._heading_rad - np.pi/2, 2*np.pi)
         elif self._redAC._pos_m[0] < 0:
@@ -57,7 +88,9 @@ class DubinsAC2Denv(gym.Env):
         elif self._redAC._pos_m[1] < 0:
             self._redAC._heading_rad = np.mod(self._redAC._heading_rad + np.pi / 2, 2 * np.pi)
 
-        envSta = self._get_sta_env()
+        self.actionIntegral += (cmd_bank_deg*cmd_bank_deg * 0.2 * 0.0001)
+
+        envSta = self._get_sta_env_v2()
 
         reward, terminal, info = self._terminal_reward_2()
 
@@ -82,9 +115,9 @@ class DubinsAC2Denv(gym.Env):
         _, _, hdg = self._calc_posDiff_hdg_deg( bpos, pos )
         self._blueAC = ACEnvironment2D(position=np.array([bpos[0], bpos[1], 0]),
                                        vel_mps=self._vel_mps,
-                                       heading_deg= hdg)
+                                       heading_deg= bhead)
 
-        return self._get_sta_env()
+        return self._get_sta_env_v2()
 
     def render(self, mode='human'):
         from gym.envs.classic_control import rendering
@@ -114,11 +147,8 @@ class DubinsAC2Denv(gym.Env):
         self.viewer.draw_circle(50,filled=False).add_attr(transform2)
 
         transform3 = rendering.Transform(translation=(pos[1], pos[0]))  # red dangerous circle
-        self.viewer.draw_circle(120,filled=False).add_attr(transform3)
+        self.viewer.draw_circle(250,filled=False).add_attr(transform3)
 
-        # self.viewer.draw_line(np.array([ self.danger_pos[0,1], self.danger_pos[0,0] ]), np.array([ self.danger_pos[1,1], self.danger_pos[1,0] ]) )
-        # self.viewer.draw_line(np.array([ self.danger_pos[2,1], self.danger_pos[2,0] ]), np.array([ self.danger_pos[1,1], self.danger_pos[1,0] ]) )
-        # self.viewer.draw_line(np.array([ self.danger_pos[0,1], self.danger_pos[0,0] ]), np.array([ self.danger_pos[2,1], self.danger_pos[2,0] ]) )
 
         # draw blue aircraft
         pos, _, att, pos_hist = self._blueAC.get_sta()
@@ -128,11 +158,6 @@ class DubinsAC2Denv(gym.Env):
         self.viewer.onetime_geoms.append(blue_ac_img)
         self.viewer.draw_polyline(pos_hist[ ::5 , [-2, -3]])
 
-
-        # turn = np.arctan2( self.errPos[1], self.errPos[0] )
-        # turn = self._pi_bound(turn)
-        # transform3 = rendering.Transform(rotation=(-turn), translation=np.array([pos[1], pos[0]]))  # Relative offset
-        # self.viewer.draw_line( np.array([0, 0]), np.array([self.errPos[1], self.errPos[0]]) ).add_attr(transform3)
 
         return self.viewer.render(return_rgb_array=False)
 
@@ -163,97 +188,79 @@ class DubinsAC2Denv(gym.Env):
                 np.random.uniform(low=-180, high=180))
 
 
-    def _get_sta_env(self):
+    def _get_sta_env_v2(self):
         Rpos, Rvel, Ratt_rad, _ = self._redAC.get_sta()
         Bpos, Bvel, Batt_rad, _ = self._blueAC.get_sta()
 
 
-        target_dist = np.array([70., 0., 0.])
+        target_dist = np.array([0., 0., 0.])
         r = R.from_euler('zyx', [Ratt_rad[2], Ratt_rad[1], Ratt_rad[0]])
         target_dist = np.matmul(r.as_matrix(), target_dist)
-
         self.goal_pos = Rpos - target_dist
-        self.errPos, self.errDist, self.errAngle_deg = self._calc_posDiff_hdg_rad(Bpos, self.goal_pos)
 
-        self.errAngle_deg = self.errAngle_deg - Batt_rad[2]
-        self.errAngle_deg = np.rad2deg(self._pi_bound(self.errAngle_deg))
+        self.errPos, self.errDist, _ = self._calc_posDiff_hdg_rad(Bpos, self.goal_pos)
+        _, _, self.LOS_deg = self._calc_posDiff_hdg_rad(Bpos, Rpos)
 
-        _, self.targetDist, self.diffAngle_deg = self._calc_posDiff_hdg_rad(Rpos, Bpos)
-        self.diffAngle_deg = np.rad2deg(self._pi_bound(self.diffAngle_deg - Ratt_rad[2]))
+        self.ATA_deg = np.rad2deg(self._pi_bound(self.LOS_deg - Batt_rad[2]))
+        self.AA_deg = np.rad2deg(self._pi_bound(Ratt_rad[2] - self.LOS_deg))
+
+        self.LOS_deg = np.rad2deg(self._pi_bound(self.LOS_deg))
+
+        _, self.targetDist, self.redATA_deg = self._calc_posDiff_hdg_rad(Rpos, Bpos)
+        self.redATA_deg = np.rad2deg(self._pi_bound(self.redATA_deg - Ratt_rad[2]))
 
         return np.array([self.errPos[0],
                          self.errPos[1],
-                         self.errAngle_deg,
-                         self.diffAngle_deg,
+                         self.LOS_deg,
+                         self.ATA_deg,
+                         self.AA_deg,
+                         self.redATA_deg,
                          np.rad2deg(Batt_rad[2]),
                          np.rad2deg(Batt_rad[0])
-                         ])
-        # Bpos[0],
-        # Bpos[1],
+                         ], dtype=np.float32)
 
-        # return np.array([self.errAngle_deg])
+    def _get_sta_env_v2_redAC(self):
+        Rpos, Rvel, Ratt_rad, _ = self._redAC.get_sta()
+        Bpos, Bvel, Batt_rad, _ = self._blueAC.get_sta()
+
+
+        # target_dist = np.array([70., 0., 0.])
+        target_dist = np.array([0., 0., 0.])
+        r = R.from_euler('zyx', [Batt_rad[2], Batt_rad[1], Batt_rad[0]])
+        target_dist = np.matmul(r.as_matrix(), target_dist)
+        goal_pos = Bpos - target_dist
+
+        errPos, errDist, _ = self._calc_posDiff_hdg_rad(Rpos, goal_pos)
+        _, _, LOS_deg = self._calc_posDiff_hdg_rad(Rpos, Bpos)
+
+        ATA_deg = np.rad2deg(self._pi_bound(LOS_deg - Ratt_rad[2]))
+        AA_deg = np.rad2deg(self._pi_bound(Batt_rad[2] - LOS_deg))
+
+        LOS_deg = np.rad2deg(self._pi_bound(LOS_deg))
+
+        _, targetDist, redATA_deg = self._calc_posDiff_hdg_rad(Bpos, Rpos)
+        redATA_deg = np.rad2deg(self._pi_bound(redATA_deg - Batt_rad[2]))
+
+        return np.array([errPos[0],
+                         errPos[1],
+                         LOS_deg,
+                         ATA_deg,
+                         AA_deg,
+                         redATA_deg,
+                         np.rad2deg(Ratt_rad[2]),
+                         np.rad2deg(Ratt_rad[0])
+                         ], dtype=np.float32)
 
 
     def _terminal_reward_2(self):
 
-        info = ''
-
-        # danger_zone = np.array([[120., 0., 0.],
-        #                        [0., 40., 0.],
-        #                        [0., -40., 0.]])
-        # danger_zone = np.matmul(r.as_matrix(), danger_zone)
-        # self.danger_pos = Rpos + danger_zone
+        info = 'win/loss'
+        terminalState = False
+		reward = 0
 
 
-        if -10 < self.errAngle_deg < 10:
-            reward = 3 * (1 - (self.errDist / self.window_width * 1.41))
-        else:
-            reward = 0
-
-        if self.targetDist < 150:
-            if (-70. < self.diffAngle_deg < 70.):
-                reward -= -8
-            if (-30 < np.rad2deg(self._pi_bound(self._redAC._heading_rad - self._blueAC._heading_rad)) < 30):
-                 reward += 0
-
-        if  self.errDist < 10:
-            terminalState = True
-            reward += 20
-        else:
-            terminalState = False
-
-        # if self._distance( self._redAC._pos_m, self._blueAC._pos_m ) < 15:
-        #     reward -=2
-
-        if (self._blueAC._pos_m[0] > self.window_width or self._blueAC._pos_m[0] < 0 or
-            self._blueAC._pos_m[1] > self.window_height or self._blueAC._pos_m[1] < 0):
-            terminalState = True
-            info = 'blue out-of-bounds, penalty'
-            reward = 0
-
-        return reward, terminalState, {'result': info}
-
-    def _build_observation_space(self):
-        s = spaces.Dict({
-            'err_x': spaces.Box(low=-self.window_width, high=self.window_width, shape=(1,), dtype=np.float32),
-            'err_y': spaces.Box(low=-self.window_height, high=self.window_height, shape=(1,), dtype=np.float32),
-            'err_heading': spaces.Box(low=-180, high=180, shape=(1,), dtype=np.float32),
-            'diff_heading': spaces.Box(low=-180, high=180, shape=(1,), dtype=np.float32),
-            'blue_heading': spaces.Box(low=0, high=359, shape=(1,), dtype=np.float32),
-            'blue_bank': spaces.Box(low=-90, high=90, shape=(1,), dtype=np.float32),
-        })
-        # v7 state space
-        # 'err_x': spaces.Box(low=-self.window_width, high=self.window_width, shape=(1,), dtype=np.float32),
-        # 'err_y': spaces.Box(low=-self.window_width, high=self.window_width, shape=(1,), dtype=np.float32),
-        # 'err_heading': spaces.Box(low=-180, high=180, shape=(1,), dtype=np.float32),
-        # 'blue_heading': spaces.Box(low=0, high=359, shape=(1,), dtype=np.float32),
-        # 'blue_bank': spaces.Box(low=-90, high=90, shape=(1,), dtype=np.float32),
-        # 'red_heading': spaces.Box(low=0, high=359, shape=(1,), dtype=np.float32),
-
-#        'blue_x': spaces.Box(low=0, high=self.window_width, shape=(1,), dtype=np.float32),
-#        'blue_y': spaces.Box(low=0, high=self.window_height, shape=(1,), dtype=np.float32),
-
-        return s
+        return reward, terminalState, {'result': info,
+                                       'redObs': self._get_sta_env_v2_redAC()}
 
     def _calc_posDiff_hdg_rad(self, start: np.array, dest: np.array):
 
