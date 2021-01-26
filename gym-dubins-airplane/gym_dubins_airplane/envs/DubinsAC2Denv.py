@@ -256,8 +256,7 @@ class DubinsAC2Denv(gym.Env):
 
         info = 'win/loss'
         terminalState = False
-		reward = 0
-
+        reward = 0
 
         return reward, terminalState, {'result': info,
                                        'redObs': self._get_sta_env_v2_redAC()}
